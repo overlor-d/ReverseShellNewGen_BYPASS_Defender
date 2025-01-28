@@ -1,40 +1,26 @@
-# Variables
 CC = gcc
-CFLAGS = -Wall -Wextra -g
-LDFLAGS = -lws2_32 -liphlpapi
-SRCDIR = src
-BUILDDIR = build
-BINDIR = bin
-TARGET = $(BINDIR)/mon_prog
+CFLAGS = -Wall -Wextra -I./src
+LDFLAGS = -lws2_32
 
-# Liste des fichiers source et objets
-SOURCES = $(wildcard $(SRCDIR)/*.c)
-OBJECTS = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SOURCES))
+SRC = src/main.c
+OBJ = main.o
+BIN = myProgram
 
-# Règle par défaut : compiler le programme
-all: $(TARGET)
+all: $(BIN)
 
-# Règle pour l'exécutable final
-$(TARGET): $(OBJECTS)
-	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-	@echo "[INFO] Compilation terminée : $(TARGET)"
+$(BIN): $(OBJ)
+	$(CC) $(CFLAGS) -o $(BIN) $(OBJ) $(LDFLAGS)
 
-# Règle pour compiler les fichiers objets
-$(BUILDDIR)/%.o: $(SRCDIR)/%.c
-	@mkdir -p $(BUILDDIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-	@echo "[INFO] Compilation de $< en $@"
+main.o: $(SRC)
+	$(CC) $(CFLAGS) -c $(SRC) -o $(OBJ)
 
-# Nettoyage des fichiers générés
 clean:
-	@rm -rf $(BUILDDIR) $(BINDIR)
-	@echo "[INFO] Nettoyage terminé"
+	rm -f $(OBJ) $(BIN)
 
-# Test rapide (par exemple : exécuter le mode serveur)
-run-server: $(TARGET)
-	@$(TARGET) -s
+exec-serv: all
+	@echo "=== Lancement du serveur ==="
+	./$(BIN) -s
 
-# Test rapide (par exemple : exécuter le mode client)
-run-client: $(TARGET)
-	@$(TARGET) -c 127.0.0.1
+exec-client: all
+	@echo "=== Lancement du client ==="
+	./$(BIN) -c 192.168.1.174
