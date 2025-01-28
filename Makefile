@@ -1,7 +1,8 @@
+OS := $(shell uname -s)
+
 CC = gcc
 CFLAGS = -Wall -Wextra -I./src
 LDFLAGS = -lws2_32
-
 SRC = src/main.c
 OBJ = main.o
 BIN = myProgram

@@ -3,57 +3,61 @@
 #include <string.h>
 
 #ifdef _WIN32
-    /* Includes Windows */
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-    #pragma comment(lib, "ws2_32.lib")
-
-    #define CLOSESOCK closesocket
+  // Windows
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  /* 
+   * Sous Visual Studio, on peut utiliser :
+   * #pragma comment(lib, "ws2_32.lib")
+   * Mais sous MinGW/GCC, on utilisera -lws2_32 dans le Makefile.
+   */
+  #define CLOSESOCK closesocket
+  #define SOCKET_ERROR_VALUE INVALID_SOCKET
 #else
-    /* Includes Linux */
-    #include <unistd.h>
-    #include <sys/socket.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
-    #include <netdb.h>
-
-    #define SOCKET int
-    #define CLOSESOCK close
+  // Linux / Unix
+  #include <unistd.h>
+  #include <sys/socket.h>
+  #include <arpa/inet.h>
+  #include <netinet/in.h>
+  #include <netdb.h>
+  #define SOCKET int
+  #define CLOSESOCK close
+  #define SOCKET_ERROR_VALUE -1
 #endif
 
 #define SERVER_PORT 4444
-#define XOR_KEY 0x5A
+#define XOR_KEY     0x5A
 
-/* 
- * Fonction d'initialisation spécifique :
- * - Sur Windows, initialise la DLL Winsock.
- * - Sur Linux, ne fait rien (retourne 0 si OK).
+/*
+ *  Initialisation spécifique aux sockets :
+ *  - Sous Windows, on appelle WSAStartup().
+ *  - Sous Linux, on ne fait rien de spécial.
  */
-int init_sockets()
-{
+int init_sockets() {
 #ifdef _WIN32
-    WSADATA wsaData;
-    return (WSAStartup(MAKEWORD(2,2), &wsaData) == 0) ? 0 : -1;
-#else
-    return 0;
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+        fprintf(stderr, "Échec WSAStartup.\n");
+        return -1;
+    }
 #endif
+    return 0;
 }
 
-/* 
- * Fonction de nettoyage :
- * - Sur Windows, libère la DLL Winsock.
- * - Sur Linux, ne fait rien. 
+/*
+ *  Nettoyage :
+ *  - Sous Windows : WSACleanup()
+ *  - Sous Linux   : rien
  */
-void cleanup_sockets()
-{
+void cleanup_sockets() {
 #ifdef _WIN32
     WSACleanup();
 #endif
 }
 
-/* 
- * Petit utilitaire pour chiffrer/déchiffrer 
- * (l'opération XOR est réversible avec la même clé).
+/*
+ *  Fonction de chiffrement/déchiffrement XOR :
+ *  L'opération XOR est réversible avec la même clé.
  */
 void xor_data(char *data, size_t length, unsigned char key) {
     for (size_t i = 0; i < length; i++) {
@@ -62,60 +66,88 @@ void xor_data(char *data, size_t length, unsigned char key) {
 }
 
 /*
- * Récupère l'adresse IP locale de la machine.
- * Méthode simple : gethostname() puis gethostbyname() (ou getaddrinfo).
- * On stocke l'IP dans local_ip.
+ *  Récupère l'IP locale réellement utilisée pour joindre
+ *  "destination_ip" via un socket UDP, puis getsockname().
  */
-void get_local_ip(char *local_ip, size_t size)
-{
-    char hostname[256];
-    memset(hostname, 0, sizeof(hostname));
-    memset(local_ip, 0, size);
+void get_local_ip(char *local_ip, size_t size, const char *destination_ip) {
+    // Crée un socket UDP
+    SOCKET tmpSock = socket(AF_INET, SOCK_DGRAM, 0);
 
-    if (gethostname(hostname, sizeof(hostname)) == 0) {
-        struct hostent *he = gethostbyname(hostname);
-        if (he && he->h_addr_list && he->h_addr_list[0]) {
-            struct in_addr **addr_list = (struct in_addr **)he->h_addr_list;
-            if (addr_list[0] != NULL) {
-                strncpy(local_ip, inet_ntoa(*addr_list[0]), size - 1);
-                return;
-            }
-        }
+    // Vérifie succès (selon l'OS)
+#ifdef _WIN32
+    if (tmpSock == INVALID_SOCKET) {
+#else
+    if (tmpSock < 0) {
+#endif
+        strncpy(local_ip, "127.0.0.1", size - 1);
+        local_ip[size - 1] = '\0';
+        return;
     }
-    /* Si problème, on met un fallback */
-    strncpy(local_ip, "127.0.0.1", size - 1);
+
+    // Prépare la structure pour se "connecter" en UDP
+    struct sockaddr_in tmpAddr;
+    memset(&tmpAddr, 0, sizeof(tmpAddr));
+    tmpAddr.sin_family = AF_INET;
+    tmpAddr.sin_port   = htons(80); // n'importe quel port distant
+    tmpAddr.sin_addr.s_addr = inet_addr(destination_ip);
+
+    // Connecte le socket UDP pour déterminer la route
+    int ret = connect(tmpSock, (struct sockaddr*)&tmpAddr, sizeof(tmpAddr));
+#ifdef _WIN32
+    if (ret == SOCKET_ERROR) {
+#else
+    if (ret < 0) {
+#endif
+        CLOSESOCK(tmpSock);
+        strncpy(local_ip, "127.0.0.1", size - 1);
+        local_ip[size - 1] = '\0';
+        return;
+    }
+
+    // Récupère l'adresse IP locale choisie
+    struct sockaddr_in localAddr;
+    socklen_t addrLen = sizeof(localAddr);
+    if (getsockname(tmpSock, (struct sockaddr*)&localAddr, &addrLen) == 0) {
+        strncpy(local_ip, inet_ntoa(localAddr.sin_addr), size - 1);
+        local_ip[size - 1] = '\0';
+    } else {
+        strncpy(local_ip, "127.0.0.1", size - 1);
+        local_ip[size - 1] = '\0';
+    }
+
+    CLOSESOCK(tmpSock);
 }
 
 /*
- * Mode serveur :
- *  - Écoute sur le port 4444
- *  - Accepte une connexion
- *  - Reçoit des données XOR-chiffrées
- *  - Déchiffre et affiche 
+ *  Mode serveur :
+ *   - Écoute sur le port 4444 (TCP)
+ *   - Accepte 1 client
+ *   - Reçoit les données XOR-chiffrées
+ *   - Déchiffre puis affiche
  */
-void run_server()
-{
+void run_server() {
     SOCKET server_sock = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+    if (server_sock == INVALID_SOCKET) {
+#else
     if (server_sock < 0) {
+#endif
         perror("socket() failed");
         return;
     }
 
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
+    struct sockaddr_in srv;
+    memset(&srv, 0, sizeof(srv));
+    srv.sin_family      = AF_INET;
+    srv.sin_addr.s_addr = INADDR_ANY; // Écoute sur toutes les interfaces
+    srv.sin_port        = htons(SERVER_PORT);
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;   // Écoute sur toutes les interfaces
-    server_addr.sin_port = htons(SERVER_PORT);  // Port 4444
-
-    /* Associe le socket à l'adresse/port */
-    if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (bind(server_sock, (struct sockaddr*)&srv, sizeof(srv)) < 0) {
         perror("bind() failed");
         CLOSESOCK(server_sock);
         return;
     }
 
-    /* Écoute des connexions */
     if (listen(server_sock, 1) < 0) {
         perror("listen() failed");
         CLOSESOCK(server_sock);
@@ -124,25 +156,27 @@ void run_server()
 
     printf("[Serveur] En écoute sur le port %d...\n", SERVER_PORT);
 
-    /* Accepte une connexion (bloquant pour la simplicité) */
     struct sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    SOCKET client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &client_len);
+    socklen_t len = sizeof(client_addr);
+    SOCKET client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &len);
+#ifdef _WIN32
+    if (client_sock == INVALID_SOCKET) {
+#else
     if (client_sock < 0) {
+#endif
         perror("accept() failed");
         CLOSESOCK(server_sock);
         return;
     }
+
     printf("[Serveur] Client connecté : %s\n", inet_ntoa(client_addr.sin_addr));
 
-    /* Reçoit les données */
     char buffer[256];
     memset(buffer, 0, sizeof(buffer));
     int received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
     if (received > 0) {
-        /* Déchiffrage XOR */
+        // Déchiffre
         xor_data(buffer, received, XOR_KEY);
-
         printf("[Serveur] Reçu déchiffré : %s\n", buffer);
     }
 
@@ -151,38 +185,48 @@ void run_server()
 }
 
 /*
- * Mode client :
- *  - Récupère l'IP locale
- *  - Chiffre (XOR avec 0x5A)
- *  - Envoie au serveur (IP spécifiée en paramètre)
+ *  Mode client :
+ *   - Se connecte au serveur <server_ip> sur le port 4444
+ *   - Récupère son IP locale (méthode UDP + getsockname)
+ *   - Chiffre cette IP locale (XOR_KEY)
+ *   - Envoie au serveur
  */
-void run_client(const char *server_ip)
-{
+void run_client(const char *server_ip) {
     SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+    if (sock == INVALID_SOCKET) {
+#else
     if (sock < 0) {
+#endif
         perror("socket() failed");
         return;
     }
 
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
+    struct sockaddr_in srv;
+    memset(&srv, 0, sizeof(srv));
+    srv.sin_family      = AF_INET;
+    srv.sin_port        = htons(SERVER_PORT);
+    srv.sin_addr.s_addr = inet_addr(server_ip);
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
-    server_addr.sin_addr.s_addr = inet_addr(server_ip);
-
-    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    // Connexion au serveur
+#ifdef _WIN32
+    if (connect(sock, (struct sockaddr*)&srv, sizeof(srv)) == SOCKET_ERROR) {
+#else
+    if (connect(sock, (struct sockaddr*)&srv, sizeof(srv)) < 0) {
+#endif
         perror("connect() failed");
         CLOSESOCK(sock);
         return;
     }
 
-    /* Récupère l'IP locale et la chiffre */
+    // Récupère l'IP locale
     char local_ip[64];
-    get_local_ip(local_ip, sizeof(local_ip));
+    get_local_ip(local_ip, sizeof(local_ip), server_ip);
+
+    // Chiffrement XOR
     xor_data(local_ip, strlen(local_ip), XOR_KEY);
 
-    /* Envoie au serveur */
+    // Envoi
     int sent = send(sock, local_ip, strlen(local_ip), 0);
     if (sent < 0) {
         perror("send() failed");
@@ -193,24 +237,24 @@ void run_client(const char *server_ip)
     CLOSESOCK(sock);
 }
 
-int main(int argc, char *argv[])
-{
+/*
+ *  main :
+ *   - init_sockets()
+ *   - parse arguments
+ *   - run_server() ou run_client() suivant
+ */
+int main(int argc, char *argv[]) {
     if (init_sockets() != 0) {
-        fprintf(stderr, "Échec d'initialisation des sockets.\n");
+        fprintf(stderr, "Impossible d'initialiser les sockets.\n");
         return EXIT_FAILURE;
     }
 
-    /* 
-     * Exemple de syntaxe :
-     *  - ./myProgram -s
-     *  - ./myProgram -c <server_ip>
-     */
     if (argc > 1 && strcmp(argv[1], "-s") == 0) {
-        /* Mode serveur */
+        // Mode serveur
         run_server();
-    } 
+    }
     else if (argc > 2 && strcmp(argv[1], "-c") == 0) {
-        /* Mode client, argv[2] = IP du serveur */
+        // Mode client, argv[2] = IP serveur
         run_client(argv[2]);
     }
     else {
